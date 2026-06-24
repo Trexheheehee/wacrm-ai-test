@@ -626,6 +626,25 @@ async function processMessage(
     return
   }
 
+  // Forward to n8n if configured (fire-and-forget)
+  const incomingWebhookUrl = process.env.N8N_INCOMING_WEBHOOK_URL
+  if (incomingWebhookUrl) {
+    fetch(incomingWebhookUrl, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-api-secret': process.env.N8N_BRIDGE_SECRET || '',
+      },
+      body: JSON.stringify({
+        message,
+        contactId: contactRecord.id,
+        accountId,
+      }),
+    }).catch((err) => {
+      console.error('[webhook] Failed to forward incoming message to n8n:', err)
+    })
+  }
+
   // Update conversation
   const { error: convError } = await supabaseAdmin()
     .from('conversations')
