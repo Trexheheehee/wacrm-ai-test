@@ -20,11 +20,32 @@ export async function POST(request: Request) {
 
     // 2. Parse and Validate Body Inputs
     const body = await request.json()
-    const { phoneNumber, message, accountId } = body
+    const { phoneNumber, message, accountId, type = 'text', interactive } = body
 
-    if (!phoneNumber || !message || !accountId) {
+    if (!phoneNumber || !accountId) {
       return NextResponse.json(
-        { error: 'phoneNumber, message, and accountId are required' },
+        { error: 'phoneNumber and accountId are required' },
+        { status: 400 }
+      )
+    }
+
+    if (type !== 'text' && type !== 'interactive') {
+      return NextResponse.json(
+        { error: `Unsupported type "${type}". Allowed values are "text" or "interactive".` },
+        { status: 400 }
+      )
+    }
+
+    if (type === 'text' && !message) {
+      return NextResponse.json(
+        { error: 'message is required for text messages' },
+        { status: 400 }
+      )
+    }
+
+    if (type === 'interactive' && (!interactive || typeof interactive !== 'object')) {
+      return NextResponse.json(
+        { error: 'interactive object is required for interactive messages' },
         { status: 400 }
       )
     }
@@ -56,16 +77,47 @@ export async function POST(request: Request) {
 
     const accessToken = decrypt(config.access_token)
 
-    // 4. Send Text via Meta Cloud API
+    // 4. Send Message via Meta Cloud API
     let waMessageId: string
     try {
-      const result = await sendTextMessage({
-        phoneNumberId: config.phone_number_id,
-        accessToken,
-        to: normalizedPhone,
-        text: message,
-      })
-      waMessageId = result.messageId
+      if (type === 'interactive') {
+        const url = `https://graph.facebook.com/v21.0/${config.phone_number_id}/messages`
+        const response = await fetch(url, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${accessToken}`,
+          },
+          body: JSON.stringify({
+            messaging_product: 'whatsapp',
+            recipient_type: 'individual',
+            to: normalizedPhone,
+            type: 'interactive',
+            interactive,
+          }),
+        })
+
+        if (!response.ok) {
+          let errorMsg = `Meta API error: ${response.status}`
+          try {
+            const data = await response.json()
+            if (data.error?.message) errorMsg = data.error.message
+          } catch {}
+          throw new Error(errorMsg)
+        }
+
+        const data = await response.json()
+        waMessageId = data.messages[0].id
+      } else {
+        // Fallback to text send
+        const result = await sendTextMessage({
+          phoneNumberId: config.phone_number_id,
+          accessToken,
+          to: normalizedPhone,
+          text: message,
+        })
+        waMessageId = result.messageId
+      }
     } catch (err) {
       const errMsg = err instanceof Error ? err.message : 'Unknown Meta API error'
       console.error('[external/send-message] Meta API send failed:', errMsg)
@@ -152,14 +204,27 @@ export async function POST(request: Request) {
       conversation = newConv
     }
 
+    // Determine what content text to save for visual rendering in the Inbox UI
+    let contentText = message
+    if (type === 'interactive') {
+      const interactiveType = interactive.type
+      if (interactiveType === 'flow') {
+        contentText = interactive.body?.text || interactive.action?.flow_cta || interactive.action?.parameters?.flow_cta || '[Flow Sent]'
+      } else if (interactiveType === 'product_list') {
+        contentText = interactive.header?.text || '[Catalog Sent]'
+      } else {
+        contentText = interactive.body?.text || '[Interactive Message]'
+      }
+    }
+
     // 7. Insert message record (so it shows in the UI)
     const { data: messageRecord, error: msgError } = await db
       .from('messages')
       .insert({
         conversation_id: conversation.id,
         sender_type: 'agent',
-        content_type: 'text',
-        content_text: message,
+        content_type: type === 'interactive' ? 'interactive' : 'text',
+        content_text: contentText,
         message_id: waMessageId,
         status: 'sent',
       })
@@ -178,7 +243,7 @@ export async function POST(request: Request) {
     const { error: convUpdateError } = await db
       .from('conversations')
       .update({
-        last_message_text: message,
+        last_message_text: contentText,
         last_message_at: new Date().toISOString(),
         updated_at: new Date().toISOString(),
       })
