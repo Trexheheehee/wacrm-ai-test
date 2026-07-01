@@ -230,16 +230,17 @@ async function processWebhook(body: { entry?: WhatsAppWebhookEntry[] }) {
       // Handle incoming messages
       if (!value.messages || !value.contacts) continue
 
-      const phoneNumberId = value.metadata.phone_number_id
+      const phoneNumberId = value.metadata?.phone_number_id
 
-      // Find user's config by phone_number_id. `.single()` returns
-      // PGRST116 for both 0 rows AND ≥2 rows — distinguish them so
-      // operators see the real cause in logs. ≥2 rows shouldn't happen
-      // post-migration 013 (UNIQUE constraint), but a row created
-      // before the constraint, or a race, would still surface here.
+      if (!phoneNumberId) {
+        console.warn('[webhook] Incoming message missing value.metadata.phone_number_id')
+        continue
+      }
+
+      // Find user's config by phone_number_id, joining the accounts table to fetch n8n_webhook_url.
       const { data: configRows, error: configError } = await supabaseAdmin()
         .from('whatsapp_config')
-        .select('*')
+        .select('*, accounts(n8n_webhook_url)')
         .eq('phone_number_id', phoneNumberId)
 
       if (configError) {
@@ -252,7 +253,7 @@ async function processWebhook(body: { entry?: WhatsAppWebhookEntry[] }) {
       }
 
       if (!configRows || configRows.length === 0) {
-        console.error('No config found for phone_number_id:', phoneNumberId)
+        console.warn('No config found for phone_number_id:', phoneNumberId)
         continue
       }
 
@@ -270,6 +271,8 @@ async function processWebhook(body: { entry?: WhatsAppWebhookEntry[] }) {
       const config = configRows[0]
 
       const decryptedAccessToken = decrypt(config.access_token)
+      // Extract custom n8n webhook URL if defined for this account
+      const n8nWebhookUrl = (config.accounts as { n8n_webhook_url?: string | null } | null)?.n8n_webhook_url ?? null
 
       for (let i = 0; i < value.messages.length; i++) {
         const message = value.messages[i]
@@ -285,7 +288,8 @@ async function processWebhook(body: { entry?: WhatsAppWebhookEntry[] }) {
           // inserts that need it for NOT NULL FK compliance. Always
           // the admin who saved the WhatsApp config.
           config.user_id,
-          decryptedAccessToken
+          decryptedAccessToken,
+          n8nWebhookUrl
         )
       }
     }
@@ -529,7 +533,8 @@ async function processMessage(
   // (contacts, conversations). Always the admin who saved the
   // WhatsApp config; the choice is arbitrary post-017 but stable.
   configOwnerUserId: string,
-  accessToken: string
+  accessToken: string,
+  n8nWebhookUrl: string | null
 ) {
   const senderPhone = normalizePhone(message.from)
   const contactName = contact.profile.name
@@ -637,7 +642,7 @@ async function processMessage(
   }
 
   // Forward to n8n if configured (fire-and-forget)
-  const incomingWebhookUrl = process.env.N8N_INCOMING_WEBHOOK_URL
+  const incomingWebhookUrl = n8nWebhookUrl || process.env.N8N_INCOMING_WEBHOOK_URL
   if (incomingWebhookUrl) {
     fetch(incomingWebhookUrl, {
       method: 'POST',
