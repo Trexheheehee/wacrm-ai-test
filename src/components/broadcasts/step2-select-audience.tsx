@@ -4,6 +4,17 @@ import { useEffect, useState, useCallback } from 'react';
 import { createClient } from '@/lib/supabase/client';
 import { CustomField, Tag } from '@/types';
 import { Button } from '@/components/ui/button';
+import { Input } from '@/components/ui/input';
+import { Label } from '@/components/ui/label';
+import { toast } from 'sonner';
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+  DialogDescription,
+  DialogFooter,
+} from '@/components/ui/dialog';
 import {
   Users,
   Tags,
@@ -13,6 +24,9 @@ import {
   ArrowRight,
   ArrowLeft,
   X,
+  Plus,
+  Trash2,
+  FileSpreadsheet,
 } from 'lucide-react';
 
 type AudienceType = 'all' | 'tags' | 'custom_field' | 'csv';
@@ -89,6 +103,226 @@ export function Step2SelectAudience({
   const [loadingFields, setLoadingFields] = useState(false);
   const [estimatedCount, setEstimatedCount] = useState<number | null>(null);
   const [loadingCount, setLoadingCount] = useState(false);
+
+  // Manual entry states
+  const [manualPhone, setManualPhone] = useState('');
+  const [manualName, setManualName] = useState('');
+  const [manualError, setManualError] = useState('');
+
+  // Upload preview states
+  const [uploadPreviewRows, setUploadPreviewRows] = useState<{ phone: string; name?: string }[] | null>(null);
+  const [uploadedFileName, setUploadedFileName] = useState<string | null>(null);
+  const [isParsingFile, setIsParsingFile] = useState(false);
+  const [mappedColumns, setMappedColumns] = useState<{ phone: string; name: string } | null>(null);
+
+  function handleAddManualContact() {
+    setManualError('');
+    const rawPhone = manualPhone.trim();
+    if (!rawPhone) {
+      setManualError('Phone number is required.');
+      return;
+    }
+
+    // Auto-prepend 91 if it's 10 digits
+    const digitsOnly = rawPhone.replace(/\D/g, '');
+    let formattedPhone = digitsOnly;
+    if (digitsOnly.length === 10) {
+      formattedPhone = '91' + digitsOnly;
+    }
+
+    if (!/^[1-9]\d{6,14}$/.test(formattedPhone)) {
+      setManualError('Invalid phone number format. Should be 7-15 digits.');
+      return;
+    }
+
+    const currentContacts = audience.csvContacts ?? [];
+    if (currentContacts.some(c => c.phone === formattedPhone)) {
+      setManualError('This phone number is already in the list.');
+      return;
+    }
+
+    onUpdate({
+      ...audience,
+      csvContacts: [
+        ...currentContacts,
+        {
+          phone: formattedPhone,
+          name: manualName.trim() || undefined
+        }
+      ]
+    });
+
+    setManualPhone('');
+    setManualName('');
+    toast.success('Recipient added.');
+  }
+
+  async function handleFileChange(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    setIsParsingFile(true);
+    setUploadedFileName(file.name);
+    setUploadPreviewRows(null);
+    setMappedColumns(null);
+
+    const isExcel = file.name.endsWith('.xlsx') || file.name.endsWith('.xls');
+
+    try {
+      if (isExcel) {
+        const reader = new FileReader();
+        reader.onload = async (evt) => {
+          try {
+            const data = new Uint8Array(evt.target?.result as ArrayBuffer);
+            const XLSX = await import('xlsx');
+            const workbook = XLSX.read(data, { type: 'array' });
+            const firstSheetName = workbook.SheetNames[0];
+            const worksheet = workbook.Sheets[firstSheetName];
+            const rows = XLSX.utils.sheet_to_json<any[]>(worksheet, { header: 1 });
+            processRawRows(rows);
+          } catch (err) {
+            console.error(err);
+            toast.error('Failed to parse Excel file.');
+            setIsParsingFile(false);
+          }
+        };
+        reader.readAsArrayBuffer(file);
+      } else {
+        const reader = new FileReader();
+        reader.onload = (evt) => {
+          try {
+            const text = evt.target?.result as string;
+            const rows = parseCsvText(text);
+            processRawRows(rows);
+          } catch (err) {
+            console.error(err);
+            toast.error('Failed to parse CSV file.');
+            setIsParsingFile(false);
+          }
+        };
+        reader.readAsText(file);
+      }
+    } catch (err) {
+      console.error(err);
+      toast.error('Failed to process file.');
+      setIsParsingFile(false);
+    }
+  }
+
+  function parseCsvText(text: string): string[][] {
+    const lines = text.split(/\r?\n/);
+    return lines.map(line => {
+      const values: string[] = [];
+      let current = '';
+      let inQuotes = false;
+      for (let i = 0; i < line.length; i++) {
+        const char = line[i];
+        if (char === '"') {
+          inQuotes = !inQuotes;
+        } else if (char === ',' && !inQuotes) {
+          values.push(current.trim());
+          current = '';
+        } else {
+          current += char;
+        }
+      }
+      values.push(current.trim());
+      return values;
+    });
+  }
+
+  function processRawRows(rawRows: any[][]) {
+    if (rawRows.length < 2) {
+      toast.error('The file must contain a header row and at least one contact row.');
+      setIsParsingFile(false);
+      return;
+    }
+
+    const headers = rawRows[0].map(h => String(h || '').trim().toLowerCase());
+    
+    // Look for headers like 'phone', 'mobile', 'number', 'name', 'contact'
+    const phoneHeaders = ['phone', 'mobile', 'number', 'contact', 'wa_id'];
+    const nameHeaders = ['name', 'fullname', 'contactname', 'firstname', 'customer'];
+
+    let phoneIdx = headers.findIndex(h => phoneHeaders.some(p => h.includes(p)));
+    let nameIdx = headers.findIndex(h => nameHeaders.some(n => h.includes(n)));
+
+    // Fallbacks
+    if (phoneIdx === -1) phoneIdx = 0;
+    if (nameIdx === -1 && phoneIdx !== 1) nameIdx = 1;
+
+    setMappedColumns({
+      phone: rawRows[0][phoneIdx] || `Column ${phoneIdx + 1}`,
+      name: nameIdx !== -1 ? rawRows[0][nameIdx] || `Column ${nameIdx + 1}` : 'N/A'
+    });
+
+    const parsed: { phone: string; name?: string }[] = [];
+    const CHUNK_SIZE = 2000;
+    let currentIndex = 1;
+
+    function processChunk() {
+      const end = Math.min(rawRows.length, currentIndex + CHUNK_SIZE);
+      for (let i = currentIndex; i < end; i++) {
+        const row = rawRows[i];
+        if (!row || row.length === 0) continue;
+
+        let rawPhone = String(row[phoneIdx] || '').trim();
+        const rawName = nameIdx !== -1 && row[nameIdx] ? String(row[nameIdx]).trim() : '';
+
+        if (!rawPhone) continue;
+
+        // Formatting: Prepend '91' if exactly 10 digits
+        const digitsOnly = rawPhone.replace(/\D/g, '');
+        let phone = digitsOnly;
+        if (digitsOnly.length === 10) {
+          phone = '91' + digitsOnly;
+        }
+
+        if (phone && /^[1-9]\d{6,14}$/.test(phone)) {
+          parsed.push({
+            phone,
+            name: rawName || undefined
+          });
+        }
+      }
+
+      currentIndex = end;
+      if (currentIndex < rawRows.length) {
+        setTimeout(processChunk, 0);
+      } else {
+        setIsParsingFile(false);
+        if (parsed.length === 0) {
+          toast.error('No valid phone numbers found in the file.');
+          setUploadPreviewRows(null);
+          setMappedColumns(null);
+          setUploadedFileName(null);
+        } else {
+          setUploadPreviewRows(parsed);
+        }
+      }
+    }
+
+    processChunk();
+  }
+
+  function handleConfirmImport() {
+    if (!uploadPreviewRows) return;
+    const current = audience.csvContacts ?? [];
+    
+    // De-dupe: prevent adding duplicates of already existing contacts
+    const seenPhones = new Set(current.map(c => c.phone));
+    const toAdd = uploadPreviewRows.filter(c => !seenPhones.has(c.phone));
+
+    onUpdate({
+      ...audience,
+      csvContacts: [...current, ...toAdd]
+    });
+
+    toast.success(`Successfully imported ${toAdd.length} new recipients.`);
+    setUploadPreviewRows(null);
+    setUploadedFileName(null);
+    setMappedColumns(null);
+  }
 
   // Tags are used both by the primary "Filter by Tags" audience type
   // AND by the exclude-list below — so always load once on mount.
@@ -389,6 +623,144 @@ export function Step2SelectAudience({
         </div>
       )}
 
+      {/* Manual & File Import Audience Custom Component */}
+      {audience.type === 'csv' && (
+        <div className="space-y-6">
+          {/* Manual Entry Form */}
+          <div className="rounded-xl border border-border bg-card/50 p-4 space-y-4">
+            <div>
+              <p className="text-sm font-medium text-foreground">Add Recipient Manually</p>
+              <p className="text-xs text-muted-foreground">Type a number to add it to the list immediately.</p>
+            </div>
+            <div className="grid grid-cols-1 gap-3 sm:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_120px] items-end">
+              <div className="space-y-1.5">
+                <Label className="text-xs text-muted-foreground">Phone Number</Label>
+                <Input
+                  type="text"
+                  placeholder="e.g. 9876543210"
+                  value={manualPhone}
+                  onChange={(e) => {
+                    setManualPhone(e.target.value);
+                    setManualError('');
+                  }}
+                  className="h-9 bg-muted text-foreground placeholder:text-muted-foreground border-border"
+                />
+              </div>
+              <div className="space-y-1.5">
+                <Label className="text-xs text-muted-foreground">Name (Optional)</Label>
+                <Input
+                  type="text"
+                  placeholder="e.g. Jane Doe"
+                  value={manualName}
+                  onChange={(e) => setManualName(e.target.value)}
+                  className="h-9 bg-muted text-foreground placeholder:text-muted-foreground border-border"
+                />
+              </div>
+              <Button
+                type="button"
+                onClick={handleAddManualContact}
+                className="h-9 bg-primary text-primary-foreground hover:bg-primary/90"
+              >
+                <Plus className="h-4 w-4 mr-1.5" />
+                Add
+              </Button>
+            </div>
+            {manualError && (
+              <p className="text-xs text-red-400 font-medium">{manualError}</p>
+            )}
+          </div>
+
+          {/* File Upload Dropzone */}
+          <div className="rounded-xl border border-border bg-card/50 p-4 space-y-4">
+            <div>
+              <p className="text-sm font-medium text-foreground">Upload CSV or Excel File</p>
+              <p className="text-xs text-muted-foreground">Upload a file (.csv, .xlsx, .xls) to parse numbers in bulk.</p>
+            </div>
+            
+            <div className="flex items-center justify-center w-full">
+              <label className="flex flex-col items-center justify-center w-full h-32 border-2 border-dashed border-border rounded-xl cursor-pointer bg-muted/40 hover:bg-muted/70 transition-colors">
+                <div className="flex flex-col items-center justify-center pt-5 pb-6">
+                  {isParsingFile ? (
+                    <>
+                      <Loader2 className="w-8 h-8 text-primary animate-spin mb-2" />
+                      <p className="text-sm text-foreground font-medium">Parsing file...</p>
+                    </>
+                  ) : (
+                    <>
+                      <Upload className="w-8 h-8 text-muted-foreground mb-2" />
+                      <p className="text-sm text-foreground font-medium">Click to upload file</p>
+                      <p className="text-xs text-muted-foreground mt-1">.csv, .xlsx, .xls (auto-mapped headers)</p>
+                    </>
+                  )}
+                </div>
+                <input
+                  type="file"
+                  accept=".csv,.xlsx,.xls"
+                  onChange={handleFileChange}
+                  disabled={isParsingFile}
+                  className="hidden"
+                />
+              </label>
+            </div>
+          </div>
+
+          {/* Recipient List / Count */}
+          {audience.csvContacts && audience.csvContacts.length > 0 && (
+            <div className="rounded-xl border border-border bg-card/50 p-4 space-y-4">
+              <div className="flex items-center justify-between">
+                <div>
+                  <p className="text-sm font-medium text-foreground">Recipients List</p>
+                  <p className="text-xs text-muted-foreground">Total of {audience.csvContacts.length} recipient(s) in custom list</p>
+                </div>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => onUpdate({ ...audience, csvContacts: [] })}
+                  className="border-red-900/30 text-red-400 hover:bg-red-950/20 text-xs h-8"
+                >
+                  <Trash2 className="h-3.5 w-3.5 mr-1" />
+                  Clear All
+                </Button>
+              </div>
+
+              <div className="max-h-60 overflow-y-auto rounded-lg border border-border bg-muted/30">
+                <table className="w-full text-xs text-left">
+                  <thead>
+                    <tr className="bg-muted/80 text-muted-foreground border-b border-border">
+                      <th className="px-3 py-2 font-medium">Phone</th>
+                      <th className="px-3 py-2 font-medium">Name</th>
+                      <th className="px-3 py-2 font-medium text-right">Action</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-border/60">
+                    {audience.csvContacts.map((contact, idx) => (
+                      <tr key={`${contact.phone}-${idx}`} className="hover:bg-muted/20">
+                        <td className="px-3 py-2 font-mono text-[11px] text-foreground">{contact.phone}</td>
+                        <td className="px-3 py-2 text-muted-foreground">{contact.name || '—'}</td>
+                        <td className="px-3 py-2 text-right">
+                          <button
+                            type="button"
+                            onClick={() => {
+                              onUpdate({
+                                ...audience,
+                                csvContacts: audience.csvContacts?.filter((_, index) => index !== idx)
+                              });
+                            }}
+                            className="text-muted-foreground hover:text-red-400 transition-colors p-1"
+                          >
+                            <X className="h-3.5 w-3.5" />
+                          </button>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+
       {/* Exclude list — applies regardless of audience type */}
       <div className="rounded-xl border border-border bg-card/50 p-4">
         <div className="mb-3 flex items-center gap-2">
@@ -467,6 +839,76 @@ export function Step2SelectAudience({
           <ArrowRight className="h-4 w-4" />
         </Button>
       </div>
+
+      {/* File Import Preview Dialog */}
+      <Dialog open={!!uploadPreviewRows} onOpenChange={(open) => {
+        if (!open) {
+          setUploadPreviewRows(null);
+          setUploadedFileName(null);
+          setMappedColumns(null);
+        }
+      }}>
+        <DialogContent className="border-border bg-popover text-popover-foreground max-w-md">
+          <DialogHeader>
+            <DialogTitle className="text-base text-foreground">Confirm Import</DialogTitle>
+            <DialogDescription className="text-xs text-muted-foreground">
+              Verify the parsed columns and data format before confirming the import.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-4 py-2">
+            <div className="rounded-lg bg-muted p-3 space-y-1.5 text-xs text-muted-foreground border border-border">
+              <p className="font-semibold text-foreground text-[11px] uppercase tracking-wider">File Details</p>
+              <p><strong className="text-foreground">Name:</strong> {uploadedFileName}</p>
+              <p><strong className="text-foreground">Total Rows:</strong> {uploadPreviewRows?.length ?? 0}</p>
+              <p><strong className="text-foreground">Phone Mapped:</strong> {mappedColumns?.phone}</p>
+              <p><strong className="text-foreground">Name Mapped:</strong> {mappedColumns?.name}</p>
+            </div>
+            
+            <div className="space-y-1.5">
+              <p className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wider">Preview (First 5 records)</p>
+              <div className="rounded-lg border border-border overflow-hidden bg-muted/20">
+                <table className="w-full text-[11px] text-left">
+                  <thead>
+                    <tr className="bg-muted/80 text-muted-foreground border-b border-border">
+                      <th className="px-3 py-1.5 font-medium">Phone</th>
+                      <th className="px-3 py-1.5 font-medium">Name</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-border/60">
+                    {uploadPreviewRows?.slice(0, 5).map((row, idx) => (
+                      <tr key={idx} className="hover:bg-muted/10">
+                        <td className="px-3 py-1.5 font-mono text-[10px] text-foreground">{row.phone}</td>
+                        <td className="px-3 py-1.5 text-muted-foreground">{row.name || '—'}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+          <DialogFooter className="gap-2">
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => {
+                setUploadPreviewRows(null);
+                setUploadedFileName(null);
+                setMappedColumns(null);
+              }}
+              className="border-border text-muted-foreground hover:bg-muted"
+            >
+              Cancel
+            </Button>
+            <Button
+              size="sm"
+              onClick={handleConfirmImport}
+              className="bg-primary text-primary-foreground hover:bg-primary/90"
+            >
+              Confirm Import
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

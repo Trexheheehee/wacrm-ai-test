@@ -20,16 +20,16 @@ const inter = Inter({
 
 export const metadata: Metadata = {
   title: {
-    default: "wacrm",
-    template: "%s — wacrm",
+    default: "Strive CRM",
+    template: "%s — Strive CRM",
   },
-  description: "Self-hostable CRM template for WhatsApp.",
+  description: "The Ultimate WhatsApp Commerce & CRM Suite",
   robots: {
     index: false,
     follow: false,
   },
   icons: {
-    icon: [{ url: "/icon" }],
+    icon: [{ url: "/logo.png" }],
   },
   formatDetection: {
     email: false,

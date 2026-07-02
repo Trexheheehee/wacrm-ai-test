@@ -234,10 +234,12 @@ export function useBroadcastSending(): UseBroadcastSendingReturn {
     const phones = [...uniqueByPhone.keys()];
 
     // Single round-trip lookup of existing contacts by phone.
+    // Tenant-isolated check: look up by account_id instead of user_id to correctly deduplicate
+    // contacts imported or added by other users in the same tenant account.
     const { data: existing, error: lookupErr } = await supabase
       .from('contacts')
       .select('*')
-      .eq('user_id', user.id)
+      .eq('account_id', accountId)
       .in('phone', phones);
     if (lookupErr) {
       throw new Error(`Failed to look up CSV contacts: ${lookupErr.message}`);
