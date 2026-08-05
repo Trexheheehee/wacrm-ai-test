@@ -28,15 +28,8 @@ import {
   AccordionTrigger,
   AccordionContent,
 } from '@/components/ui/accordion';
+import { useFacebookSdk } from '@/hooks/use-facebook-sdk';
 import type { WhatsAppConfig as WhatsAppConfigType } from '@/types';
-
-declare global {
-  interface Window {
-    fbAsyncInit?: () => void;
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    FB?: any;
-  }
-}
 
 const MASKED_TOKEN = '••••••••••••••••';
 
@@ -45,12 +38,8 @@ type ResetReason = 'token_corrupted' | 'meta_api_error' | null;
 
 export default function WhatsAppConfig() {
   const supabase = createClient();
-  // After multi-user, whatsapp_config is one-row-per-account, not
-  // one-row-per-user. We pull `accountId` straight off the auth
-  // context and key every read off it — so a teammate who just
-  // joined an account sees the inviter's saved config without
-  // having to re-enter anything.
   const { user, accountId, loading: authLoading, profileLoading } = useAuth();
+  const { isLoaded: isSdkLoaded } = useFacebookSdk();
 
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -180,95 +169,61 @@ export default function WhatsAppConfig() {
     fetchConfig(accountId);
   }, [authLoading, profileLoading, user, accountId, fetchConfig]);
 
-  // Load Facebook SDK for Embedded Signup
-  useEffect(() => {
-    if (typeof window === 'undefined') return;
-    if (window.FB) return;
-
-    window.fbAsyncInit = function () {
-      window.FB.init({
-        appId: process.env.NEXT_PUBLIC_FACEBOOK_APP_ID || process.env.NEXT_PUBLIC_WHATSAPP_APP_ID || '',
-        cookie: true,
-        xfbml: true,
-        version: process.env.NEXT_PUBLIC_FACEBOOK_SDK_VERSION || 'v20.0',
+  const handleCodeExchange = useCallback(async (code: string) => {
+    try {
+      toast.loading('Exchanging authorization code for access token...', { id: 'facebook-auth' });
+      const res = await fetch('/api/whatsapp/exchange-code', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ code }),
       });
-    };
 
-    const id = 'facebook-jssdk';
-    if (document.getElementById(id)) return;
-    const fjs = document.getElementsByTagName('script')[0];
-    const js = document.createElement('script') as HTMLScriptElement;
-    js.id = id;
-    js.src = 'https://connect.facebook.net/en_US/sdk.js';
-    
-    if (fjs && fjs.parentNode) {
-      fjs.parentNode.insertBefore(js, fjs);
-    } else {
-      document.head.appendChild(js);
+      const data = await res.json();
+      if (!res.ok) {
+        throw new Error(data.error || 'Failed to exchange authorization code');
+      }
+
+      if (data.access_token) {
+        setAccessToken(data.access_token);
+        setTokenEdited(true);
+        toast.success('Successfully authenticated & retrieved Access Token!', { id: 'facebook-auth' });
+      } else {
+        throw new Error('Access token not found in exchange response');
+      }
+    } catch (err) {
+      console.error('[Meta Embedded Signup] Exchange failed:', err);
+      const msg = err instanceof Error ? err.message : 'Unknown error';
+      toast.error(`Authentication failed: ${msg}`, { id: 'facebook-auth' });
     }
   }, []);
 
-  function launchWhatsAppSignup() {
+  const launchWhatsAppSignup = useCallback(() => {
     if (!window.FB) {
-      toast.error('Facebook SDK not loaded yet. Please try again in a moment.');
+      toast.error('Facebook SDK is not loaded yet. Please wait a moment and try again.');
       return;
     }
 
     const configId = process.env.NEXT_PUBLIC_FACEBOOK_CONFIG_ID;
 
     window.FB.login(
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      (response: any) => {
+      (response) => {
         console.log('[Meta Embedded Signup] Auth Response:', response);
-        if (response.authResponse) {
-          const authCode = response.authResponse.code;
-          if (!authCode) {
-            toast.error('Authentication succeeded, but no authorization code was returned.');
-            return;
-          }
-
-          toast.loading('Exchanging authorization code for access token...', { id: 'facebook-auth' });
-          (async () => {
-            try {
-              const res = await fetch('/api/whatsapp/exchange-code', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ code: authCode }),
-              });
-
-              const data = await res.json();
-              if (!res.ok) {
-                throw new Error(data.error || 'Failed to exchange authorization code');
-              }
-
-              if (data.access_token) {
-                setAccessToken(data.access_token);
-                setTokenEdited(true);
-                toast.success('Successfully authenticated & retrieved Access Token!', { id: 'facebook-auth' });
-              } else {
-                throw new Error('Access token not found in exchange response');
-              }
-            } catch (err) {
-              console.error('[Meta Embedded Signup] Exchange failed:', err);
-              const msg = err instanceof Error ? err.message : 'Unknown error';
-              toast.error(`Authentication failed: ${msg}`, { id: 'facebook-auth' });
-            }
-          })();
+        if (response.authResponse?.code) {
+          handleCodeExchange(response.authResponse.code);
         } else {
-          toast.error('Facebook login cancelled or failed.');
+          toast.error('Embedded signup cancelled or failed.');
         }
       },
       {
-        config_id: configId || undefined,
+        config_id: configId,
         response_type: 'code',
         override_default_response_type: true,
-        scope: 'whatsapp_business_management,whatsapp_business_messaging',
         extras: {
-          feature: 'whatsapp_embedded_signup',
+          setup: {},
         },
       }
     );
-  }
+  }, [handleCodeExchange]);
 
   async function handleSave() {
     if (!phoneNumberId.trim()) {
