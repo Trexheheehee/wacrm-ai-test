@@ -169,13 +169,79 @@ export default function WhatsAppConfig() {
     fetchConfig(accountId);
   }, [authLoading, profileLoading, user, accountId, fetchConfig]);
 
+  // Listen for Meta Embedded Signup postMessage events
+  useEffect(() => {
+    const handleMessage = (event: MessageEvent) => {
+      // Security check: strictly filter allowed Facebook origins
+      if (
+        event.origin !== 'https://www.facebook.com' &&
+        event.origin !== 'https://web.facebook.com'
+      ) {
+        return;
+      }
+
+      try {
+        const rawData = event.data;
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        let data: any;
+
+        if (typeof rawData === 'string') {
+          try {
+            data = JSON.parse(rawData);
+          } catch {
+            // Not a JSON string payload, ignore
+            return;
+          }
+        } else if (typeof rawData === 'object' && rawData !== null) {
+          data = rawData;
+        } else {
+          return;
+        }
+
+        if (data && data.type === 'WA_EMBEDDED_SIGNUP') {
+          console.log('[Meta Embedded Signup] postMessage received:', data);
+
+          if (data.event === 'FINISH') {
+            const payload = data.data || data.payload || data;
+            const phoneId = payload.phone_number_id || payload.phoneNumberId;
+            const waba = payload.waba_id || payload.wabaId;
+
+            if (phoneId) {
+              setPhoneNumberId(String(phoneId));
+            }
+            if (waba) {
+              setWabaId(String(waba));
+            }
+
+            if (phoneId || waba) {
+              toast.success('Successfully captured WhatsApp Phone Number and WABA IDs!');
+            }
+          } else if (data.event === 'CANCEL') {
+            console.log('[Meta Embedded Signup] User cancelled signup.');
+          }
+        }
+      } catch (err) {
+        console.error('[Meta Embedded Signup] postMessage error:', err);
+      }
+    };
+
+    window.addEventListener('message', handleMessage);
+    return () => {
+      window.removeEventListener('message', handleMessage);
+    };
+  }, []);
+
   const handleCodeExchange = useCallback(async (code: string) => {
     try {
       toast.loading('Exchanging authorization code for access token...', { id: 'facebook-auth' });
+      const redirectUri = window.location.origin + window.location.pathname;
       const res = await fetch('/api/whatsapp/exchange-code', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ code }),
+        body: JSON.stringify({
+          code,
+          redirect_uri: redirectUri,
+        }),
       });
 
       const data = await res.json();

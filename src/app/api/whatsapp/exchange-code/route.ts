@@ -17,7 +17,7 @@ export async function POST(request: Request) {
 
     // 2. Parse request payload
     const body = await request.json()
-    const { code } = body
+    const { code, redirect_uri } = body
 
     if (!code) {
       return NextResponse.json({ error: 'Authorization code is required' }, { status: 400 })
@@ -42,9 +42,13 @@ export async function POST(request: Request) {
       )
     }
 
-    // 4. Resolve the redirect URI (must match the origin that initiated FB.login)
-    const origin = request.headers.get('origin') || process.env.NEXT_PUBLIC_SITE_URL || ''
-    const redirectUri = origin.endsWith('/') ? origin.slice(0, -1) : origin
+    // 4. Resolve the redirect URI (must match the URI that initiated FB.login on frontend)
+    const rawRedirectUri =
+      redirect_uri ||
+      process.env.NEXT_PUBLIC_SITE_URL ||
+      request.headers.get('origin') ||
+      ''
+    const redirectUri = rawRedirectUri.endsWith('/') ? rawRedirectUri.slice(0, -1) : rawRedirectUri
 
     // 5. Query Meta OAuth endpoint to exchange code for token
     const tokenUrl = new URL(`https://graph.facebook.com/${sdkVersion}/oauth/access_token`)
@@ -53,7 +57,7 @@ export async function POST(request: Request) {
     tokenUrl.searchParams.set('redirect_uri', redirectUri)
     tokenUrl.searchParams.set('code', code)
 
-    console.log('[whatsapp/exchange-code] Requesting token exchange for appId:', appId, 'with redirectUri:', redirectUri)
+    console.log('[whatsapp/exchange-code] Requesting token exchange for appId:', appId, 'with redirect_uri:', redirectUri)
 
     const response = await fetch(tokenUrl.toString(), { method: 'GET' })
     const data = await response.json()
