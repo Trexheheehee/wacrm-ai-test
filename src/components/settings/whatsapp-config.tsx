@@ -172,13 +172,16 @@ export default function WhatsAppConfig() {
   // Listen for Meta Embedded Signup postMessage events
   useEffect(() => {
     const handleMessage = (event: MessageEvent) => {
-      // Security check: strictly filter allowed Facebook origins
-      if (
-        event.origin !== 'https://www.facebook.com' &&
-        event.origin !== 'https://web.facebook.com'
-      ) {
-        return;
-      }
+      console.log('Received Message Event:', event.origin, event.data);
+
+      // Allow Facebook origins AND the current website origin for testing
+      const allowedOrigins = [
+        'https://www.facebook.com',
+        'https://web.facebook.com',
+        window.location.origin,
+      ];
+
+      if (!allowedOrigins.includes(event.origin)) return;
 
       try {
         const rawData = event.data;
@@ -234,13 +237,14 @@ export default function WhatsAppConfig() {
   const handleCodeExchange = useCallback(async (code: string) => {
     try {
       toast.loading('Exchanging authorization code for access token...', { id: 'facebook-auth' });
-      const redirectUri = window.location.origin + window.location.pathname;
+      const REDIRECT_URI = "https://strivecrm.vercel.app/settings";
+      console.log('[Meta Embedded Signup] Using hardcoded REDIRECT_URI:', REDIRECT_URI);
       const res = await fetch('/api/whatsapp/exchange-code', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           code,
-          redirect_uri: redirectUri,
+          redirect_uri: REDIRECT_URI,
         }),
       });
 
