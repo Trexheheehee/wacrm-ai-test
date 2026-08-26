@@ -237,15 +237,10 @@ export default function WhatsAppConfig() {
   const handleCodeExchange = useCallback(async (code: string) => {
     try {
       toast.loading('Exchanging authorization code for access token...', { id: 'facebook-auth' });
-      const REDIRECT_URI = "https://strivecrm.vercel.app/settings";
-      console.log('[Meta Embedded Signup] Using hardcoded REDIRECT_URI:', REDIRECT_URI);
       const res = await fetch('/api/whatsapp/exchange-code', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          code,
-          redirect_uri: REDIRECT_URI,
-        }),
+        body: JSON.stringify({ code }),
       });
 
       const data = await res.json();

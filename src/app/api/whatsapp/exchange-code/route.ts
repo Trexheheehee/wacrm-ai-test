@@ -42,17 +42,15 @@ export async function POST(request: Request) {
       )
     }
 
-    // 4. Manually set hardcoded redirect URI to guarantee exact match with Meta App settings
-    const REDIRECT_URI = "https://strivecrm.vercel.app/settings";
-
-    // 5. Query Meta OAuth endpoint to exchange code for token
+    // 4. Query Meta OAuth endpoint to exchange code for token
+    // Note: Embedded Signup (FB.login) does not use a redirect_uri during initial popup auth,
+    // so sending redirect_uri here causes Meta to reject with a URI mismatch error.
     const tokenUrl = new URL(`https://graph.facebook.com/${sdkVersion}/oauth/access_token`)
     tokenUrl.searchParams.set('client_id', appId)
     tokenUrl.searchParams.set('client_secret', appSecret)
-    tokenUrl.searchParams.set('redirect_uri', REDIRECT_URI)
     tokenUrl.searchParams.set('code', code)
 
-    console.log('[whatsapp/exchange-code] Requesting token exchange for appId:', appId, 'with redirect_uri:', REDIRECT_URI)
+    console.log('[whatsapp/exchange-code] Requesting token exchange for appId:', appId)
 
     const response = await fetch(tokenUrl.toString(), { method: 'GET' })
     const data = await response.json()
